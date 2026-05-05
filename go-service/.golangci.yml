@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  # Defaults (errcheck, govet, ineffassign, staticcheck, unused) plus a few
+  # that catch real bugs in HTTP and error-handling code.
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - unconvert
+  settings:
+    errcheck:
+      # Closing a response body on defer is fire-and-forget; not worth the noise.
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+    staticcheck:
+      checks:
+        - all
+
+formatters:
+  enable:
+    - gofmt
