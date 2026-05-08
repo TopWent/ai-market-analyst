@@ -1,0 +1,36 @@
+services:
+  market-data:
+    build:
+      context: ./go-service
+    image: ai-market-analyst/market-data:dev
+    environment:
+      EXCHANGE_BASE_URL: ${EXCHANGE_BASE_URL:-https://api.binance.com}
+      MD_HTTP_ADDR: ":8080"
+      MD_CACHE_TTL: ${MD_CACHE_TTL:-30s}
+      MD_LOG_LEVEL: ${MD_LOG_LEVEL:-info}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/market-data", "-version"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  ai-analyst:
+    build:
+      context: ./py-service
+    image: ai-market-analyst/ai-analyst:dev
+    environment:
+      MARKET_DATA_URL: http://market-data:8080
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-5}
+      AI_HTTP_ADDR: ":8081"
+      AI_ANALYZE_RATE_LIMIT: ${AI_ANALYZE_RATE_LIMIT:-10/minute}
+      AI_LOG_LEVEL: ${AI_LOG_LEVEL:-info}
+    ports:
+      - "8081:8081"
+    depends_on:
+      market-data:
+        condition: service_started
+    restart: unless-stopped
