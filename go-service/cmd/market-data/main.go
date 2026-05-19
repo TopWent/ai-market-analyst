@@ -59,7 +59,10 @@ func run(ctx context.Context, cfg *config, logger *slog.Logger) error {
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	logger.Info("market-data starting",
