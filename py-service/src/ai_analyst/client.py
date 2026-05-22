@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -8,11 +8,8 @@ class MarketDataError(Exception):
 
 
 class MarketDataClient:
-    """Thin wrapper around the market-data REST API.
-
-    Holds a single httpx.AsyncClient for the lifetime of the instance so HTTP
-    connections are pooled across requests. Call close() on shutdown.
-    """
+    """REST client for the market-data service. Reuses one pooled connection;
+    call close() on shutdown."""
 
     def __init__(self, base_url: str, timeout: float = 10.0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -38,6 +35,6 @@ class MarketDataClient:
             raise MarketDataError(f"status {resp.status_code}: {resp.text[:256]}")
 
         try:
-            return resp.json()
+            return cast(dict[str, Any], resp.json())
         except ValueError as e:
             raise MarketDataError(f"invalid json: {e}") from e

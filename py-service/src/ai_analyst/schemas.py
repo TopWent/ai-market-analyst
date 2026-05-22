@@ -1,10 +1,10 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Direction(str, Enum):
+class Direction(StrEnum):
     BUY = "buy"
     SELL = "sell"
     HOLD = "hold"
