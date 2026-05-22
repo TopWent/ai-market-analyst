@@ -4,9 +4,10 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import cast
 
 from anthropic import AsyncAnthropic
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -54,7 +55,13 @@ def build_app() -> FastAPI:
 
     app = FastAPI(title="ai-analyst", version="0.1.0", lifespan=lifespan)
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    def rate_limit_handler(request: Request, exc: Exception) -> Response:
+        # slowapi only ever passes RateLimitExceeded here; the Exception
+        # signature is what Starlette's handler registry expects.
+        return _rate_limit_exceeded_handler(request, cast(RateLimitExceeded, exc))
+
+    app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

@@ -1,12 +1,18 @@
+import asyncio
 import json
 import logging
-from typing import Any, Protocol
+from typing import Any
 
+from anthropic import APITimeoutError, AsyncAnthropic, RateLimitError
+from anthropic.types import MessageParam, ToolParam
 from pydantic import ValidationError
 
 from .schemas import Setup
 
 logger = logging.getLogger(__name__)
+
+# How long to wait before retrying a transient API error, in seconds.
+_TRANSIENT_BACKOFF = 1.0
 
 
 SYSTEM_PROMPT = (
@@ -26,7 +32,7 @@ SYSTEM_PROMPT = (
 )
 
 
-SUBMIT_SETUP_TOOL: dict[str, Any] = {
+SUBMIT_SETUP_TOOL: ToolParam = {
     "name": "submit_setup",
     "description": "Submit a structured trading setup analysis for the supplied snapshot.",
     "input_schema": {
@@ -71,44 +77,70 @@ class AnalystError(Exception):
     pass
 
 
-class _AnthropicLike(Protocol):
-    messages: Any
-
-
 class Analyst:
-    def __init__(self, client: _AnthropicLike, model: str, max_tokens: int = 512) -> None:
+    def __init__(self, client: AsyncAnthropic, model: str, max_tokens: int = 512) -> None:
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
 
     async def analyze(self, snapshot: dict[str, Any]) -> Setup:
-        user_payload = self._build_user_payload(snapshot)
+        messages: list[MessageParam] = [
+            {"role": "user", "content": self._build_user_payload(snapshot)},
+        ]
 
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            tools=[
-                {**SUBMIT_SETUP_TOOL, "cache_control": {"type": "ephemeral"}},
-            ],
-            tool_choice={"type": "tool", "name": "submit_setup"},
-            messages=[{"role": "user", "content": user_payload}],
-        )
+        # One retry budget for bad payloads. We feed the validation error back
+        # as a tool_result so the model can correct itself, then give up.
+        for attempt in range(2):
+            response = await self._create(messages)
 
-        tool_input = _extract_tool_input(response.content, "submit_setup")
-        if tool_input is None:
-            raise AnalystError("Claude did not call submit_setup")
+            tool_use = _find_tool_use(response.content, "submit_setup")
+            if tool_use is None:
+                raise AnalystError("Claude did not call submit_setup")
 
-        try:
-            return Setup.model_validate(tool_input)
-        except ValidationError as e:
-            raise AnalystError(f"submit_setup payload failed validation: {e}") from e
+            try:
+                return Setup.model_validate(tool_use.input)
+            except ValidationError as e:
+                if attempt == 1:
+                    raise AnalystError(f"submit_setup payload failed validation: {e}") from e
+                logger.warning("invalid setup payload, retrying with feedback: %s", e)
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use.id,
+                                "is_error": True,
+                                "content": (
+                                    f"Validation failed: {e}. "
+                                    "Call submit_setup again with corrected fields."
+                                ),
+                            }
+                        ],
+                    }
+                )
+
+        raise AnalystError("retry budget exhausted")  # pragma: no cover
+
+    async def _create(self, messages: list[MessageParam]) -> Any:
+        # Retry once on transient API failures with a short backoff.
+        for attempt in range(2):
+            try:
+                return await self.client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=SYSTEM_PROMPT,
+                    tools=[SUBMIT_SETUP_TOOL],
+                    tool_choice={"type": "tool", "name": "submit_setup"},
+                    messages=messages,
+                )
+            except (RateLimitError, APITimeoutError) as e:
+                if attempt == 1:
+                    raise AnalystError(f"anthropic call failed: {e}") from e
+                logger.warning("transient anthropic error, retrying: %s", e)
+                await asyncio.sleep(_TRANSIENT_BACKOFF)
+        raise AnalystError("transient retry budget exhausted")  # pragma: no cover
 
     @staticmethod
     def _build_user_payload(snapshot: dict[str, Any]) -> str:
@@ -131,10 +163,10 @@ class Analyst:
         )
 
 
-def _extract_tool_input(content: list[Any], tool_name: str) -> dict[str, Any] | None:
+def _find_tool_use(content: list[Any], tool_name: str) -> Any:
     for block in content:
         if getattr(block, "name", None) == tool_name and hasattr(block, "input"):
-            return block.input  # type: ignore[no-any-return]
+            return block
     return None
 
 
